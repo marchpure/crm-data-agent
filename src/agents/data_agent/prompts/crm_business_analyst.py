@@ -1,3 +1,12 @@
+'''
+Author: haoxingjun
+Date: 2025-10-14 14:30:34
+Email: haoxingjun@bytedance.com
+LastEditors: haoxingjun
+LastEditTime: 2025-10-16 11:02:49
+Description: file information
+Company: ByteDance
+'''
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

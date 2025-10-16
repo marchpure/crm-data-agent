@@ -1,11 +1,3 @@
-# Replaced Google Cloud and ADK dependencies with Volcengine and Presto
-# google-adk==1.3.*
-# google-genai==1.20.*
-# google-cloud-aiplatform[adk]==1.97.*
-# google-cloud-bigquery[pandas]
-# google-cloud-bigquery-storage
-# google-cloud-firestore==2.21.*
-
 openai>=1.0
 
 # Volcengine Dependencies (from deploy_demo_data/requirements.txt)
@@ -20,21 +12,11 @@ thrift
 trino
 
 # Core Application Dependencies
-streamlit
-tabulate
-platformdirs
-Flask
-gunicorn
 scikit-learn
 pillow
 pandas
 altair==5.5.*
-vl-convert-python
 python-dotenv
-cloudpickle==3.1.1
-pydantic==2.11.*
-yfinance
-matplotlib
 
 # Placeholder for VEADK if it's a separate package
 # veadk==x.y.z

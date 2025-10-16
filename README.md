@@ -1,179 +1,96 @@
-# CRM Data Q&A Agent - Advanced RAG with NL2SQL over Salesforce Data
+# CRM 数据问答代理：基于火山引擎 EMR Serverless 的 NL2SQL 样例
 
-| | |
-| ------------ | ------------- |
-| <img src="src/web/images/logo-dark.svg" width="256"/> | This is a 📊 Data Analytics Agent that grounds its conversation in Salesforce data replicated to a Data Warehouse in BigQuery.    |
+这是一个数据分析代理项目，它允许用户通过自然语言与存储在火山引擎服务中的 CRM 数据进行问答交互。
 
-The agent demonstrates an advanced [Retrieval-Augmented Generation](https://cloud.google.com/use-cases/retrieval-augmented-generation) workflow
-in a multi-agentic system with contextualized Natural-Language-to-SQL
-components powered by Long Context and In-Context Learning capabilities of [Gemini 2.5 Pro](https://deepmind.google/technologies/gemini).
+该项目利用了先进的检索增强生成（RAG）和自然语言到 SQL（NL2SQL）技术，其核心由以下部分构成：
+- **数据存储**：使用火山引擎对象存储（TOS）作为数据湖，存储 Parquet 格式的数据文件。
+- **查询引擎**：利用 **火山引擎 EMR Serverless Presto** 直接对存储在 TOS 中的数据进行按量计费Serverless的 SQL 查询。
+- **数据目录**：通过湖仓分析服务（LAS）的 Catalog 功能管理数据元信息。
+- **AI 代理**：基于 VeADK框架构建，负责理解用户问题、生成 SQL、分析查询结果并生成最终答案。
 
-🚀 **Blog post**: [Forget vibe coding, vibe Business Intelligence is here!](https://medium.com/@vladkol_eqwu/business-intelligence-in-ai-era-how-agents-and-gemini-unlock-your-data-ce158081c678)
+---
 
-The agent is built with [Agent Development Kit](https://google.github.io/adk-docs/).
+## 架构概览
 
-* The agent interprets questions about state of the business how it's reflected in CRM rather than directly referring to Salesforce data entities.
-* It generates SQL query to gather data necessary for answering the question
-* It creates interactive [Vega-Lite](https://vega.github.io/vega-lite/) diagrams.
-* It analyzes the results, provides key insights and recommended actions.
+<p align="center">
+  <img src="tutorial/img/data_agent_design.jpg" alt="架构设计图" style="width:800px;"/>
+</p>
 
-<a href="tutorial/img/screenshot-dark.png">
-<img src="tutorial/img/screenshot-dark.png" alt="What are our best lead source in every country?" style="width:900px;"/>
-</a>
+项目的工作流程如下：
+1.  用户通过 Web 界面提出问题（例如：“我们在美国最重要的 5 个客户是谁？”）。
+2.  Agent服务接收问题，并借助模型将其转换为针对 EMR Serverless Presto 的 SQL 查询语句。
+3.  代理通过 EMR Serverless Presto 执行该 SQL 查询。
+4.  EMR Serverless Presto 直接从 TOS 中读取相关的 Parquet 文件，执行计算，并将结果返回给代理。
+5.  代理将查询结果和原始问题一同发送给 Gemini 模型，进行分析、总结，并生成最终的自然语言答案和可视化图表。
+6.  Web 界面将答案呈现给用户。
 
-## Agent Development Kit
+---
 
-<img src="https://google.github.io/adk-docs/assets/agent-development-kit.png" style="width:64px;"/>
+## 部署与运行指南
 
-The agent is built using [Agent Development Kit](https://google.github.io/adk-docs/) (ADK) - a flexible
-and modular framework for developing and deploying AI agents.
+请遵循以下步骤来配置和运行本项目。
 
-The sample also demonstrates:
+### 1. 配置环境变量
 
-* How to build a Web UI for ADK-based data agents using [streamlit](https://streamlit.io/).
-* How to use [Artifact Services](https://google.github.io/adk-docs/artifacts/) with ADK.
-* How to stream and interpret session [events](https://google.github.io/adk-docs/events/).
-* How to create and use a custom [Session Service](https://google.github.io/adk-docs/sessions/session/).
-
-## 🕵🏻‍♀️ Simple questions are complex
-
-<img src="tutorial/img/top_5_customers.jpg" alt="Top 5 customers by impact in the US this year" style="width:800px;"/>
-
-### Examples of questions the agent can answer
-
-* "Top 5 customers in every country"
-* "What are our best lead sources?"
-  * or more specific "What are our best lead sources by value?"
-* Lead conversion trends in the US.
-
-### High-Level Design
-
-<img src="tutorial/img/data_agent_design.jpg" alt="Top 5 customers in every country" style="width:800px;"/>
-
-## 🚀 Deploy and Run
-
-To deploy the sample with demo data to a publicly available Cloud Run service,
-use `Run on Google Cloud` button below.
-
-[![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://console.cloud.google.com/cloudshell/?cloudshell_git_repo=https://github.com/vladkol/crm-data-agent&cloudshell_image=gcr.io/cloudrun/button&show=terminal&utm_campaign=CDR_0xc245fc42_default_b417442301&utm_medium=external&utm_source=blog)
-
-You need a Google Cloud Project with a [Billing Account](https://console.cloud.google.com/billing?utm_campaign=CDR_0xc245fc42_default_b417442301&utm_medium=external&utm_source=blog).
-
-### Manual deployment
-
-* Clone this repository:
+首先，复制 `src/.env-template` 文件，创建一个名为 `.env` 的新文件，并填入您的火山引擎凭证和配置信息。
 
 ```bash
-git clone https://github.com/vladkol/crm-data-agent && cd crm-data-agent
+cp src/.env-template src/.env
 ```
 
-* Create a Python virtual Environment
+然后，编辑 `src/.env` 文件，填写以下必需的配置项：
 
-> [uv](https://docs.astral.sh/uv/) makes it easy: `uv venv .venv --python 3.11 && source .venv/bin/activate`
+-   `VOLCENGINE_AK`: **[必需]** 您的火山引擎 Access Key ID。
+-   `VOLCENGINE_SK`: **[必需]** 您的火山引擎 Secret Access Key。
+-   `VOLCENGINE_REGION`: **[必需]** 您的火山引擎区域，例如 `cn-beijing`。
+-   `ARK_API_KEY`: **[必需]** 您用于访问火山引擎方舟（Ark）大语言模型的 API Key。
+-   `VE_LLM_MODEL_ID`: **[必需]** 您希望使用的方舟大语言模型的 Endpoint ID，例如 `doubao-pro-32k`。
+-   `VE_TOS_BUCKET`: **[必需]** 您用于存储 CRM 数据的火山引擎 TOS 存储桶名称。
+-   `EMR_CATALOG`: **[必需]** 您在 LAS 中为 EMR Serverless Presto 配置的 Catalog 名称。
+-   `EMR_DATABASE`: **[必需]** 在上述 Catalog 下，用于存放 CRM 数据表的数据库名称。
 
-* Install dependencies
+### 2. 手动配置 LAS Catalog 和 Database
 
-`pip install -r src/requirements.txt`
+**重要提示**：当前火山引擎的 Python SDK 尚不支持通过代码直接创建 LAS 的 Catalog 和 Database。因此，您需要手动在火山引擎控制台完成以下配置。
 
-or, with `uv`:
+1.  登录到火山引擎控制台。
+2.  进入 **湖仓分析服务（LAS）**。
+3.  在 **数据目录** -> **Catalog 管理** 中，创建一个新的 Catalog。请确保其名称与您在 `.env` 文件中配置的 `EMR_CATALOG` 值完全一致。
+4.  在您刚刚创建的 Catalog 中，进入 **Database 管理**，创建一个新的 Database。请确保其名称与您在 `.env` 文件中配置的 `EMR_DATABASE` 值完全一致。
 
-`uv pip install -r src/requirements.txt`
+### 3. 部署演示数据与创建数据表
 
-* Create `.env` file in `src` directory. Set configuration values as described below.
+我们提供了一个部署脚本，它可以帮助您完成演示数据的上传和数据表的创建。
 
-> [src/.env-template](src/.env-template) is a template to use for your `.env` file.
-
-### Environment Variables
-
-Before running the application, you need to set up the necessary environment variables. Copy the `src/.env-template` file to `src/.env` and fill in the required values:
-
-- `ARK_API_KEY`: [REQUIRED] Your Volcengine Ark API Key.
-- `VE_LLM_MODEL_ID`: [REQUIRED] The model endpoint ID from the Volcengine Ark platform (e.g., `doubao-pro-32k`).
-- `EMR_CATALOG`: [REQUIRED] The catalog name in your EMR Serverless Presto instance.
-- `EMR_DATABASE`: [REQUIRED] The database name within the specified catalog that contains your CRM data.
-
-Optional:
-- `ARK_BASE_URL`: The base URL for the Volcengine Ark API. Defaults to `https://ark.cn-beijing.volces.com/api/v3`.
-
-**If you deploy the agent to Cloud Run**, its service account must have the following roles:
-
-* BigQuery Job User (`roles/bigquery.jobUser`) in BQ_PROJECT_ID project (or GOOGLE_CLOUD_PROJECT, if BQ_PROJECT_ID is not defined).
-* BigQuery Data Viewer (`roles/bigquery.dataViewer`) for SFDC_BQ_DATASET dataset.
-* Storage Object User (`roles/storage.objectUser`) for AI_STORAGE_BUCKET bucket.
-* Vertex AI User (`roles/aiplatform.user`) in GOOGLE_CLOUD_PROJECT project.
-
-### Enable APIs in your project
+进入 `src/agents/data_agent/deploy_demo_data` 目录，并执行以下命令：
 
 ```bash
-gcloud services enable \
-    aiplatform.googleapis.com \
-    cloudbuild.googleapis.com \
-    run.googleapis.com \
-    firestore.googleapis.com \
-    bigquery.googleapis.com \
-
-    --project=[GOOGLE_CLOUD_PROJECT]
+cd src/agents/data_agent/deploy_demo_data
+python3 deploy_to_volcengine.py
 ```
 
-> Replace `[GOOGLE_CLOUD_PROJECT]` with GOOGLE_CLOUD_PROJECT value you put in `src/.env` file.
+该脚本会自动执行以下操作：
+-   将 `sample-data` 目录下的示例 Parquet 数据文件上传到您在 `.env` 文件中配置的 TOS 存储桶。
+-   读取 `all_sql_operations.sql` 文件中的 `CREATE TABLE` 语句。
+-   通过 **EMR Serverless Presto** 在您配置的 LAS Catalog 和 Database 中执行这些 SQL 语句，创建外部表，使其指向您刚刚上传到 TOS 的数据。
 
-### Deploy Salesforce Data
+### 4. 启动代理服务进行测试
 
-#### Demo data
+一切准备就绪后，回到项目根目录下的 `src/agents` 目录，使用 `veadk` 命令启动 Web 服务。
 
-Run `utils/deploy_demo_data.py` script.
+```bash
+cd src/agents
+veadk web
+```
 
-> **Note**: Demo data contains records dated 2020-2022. If you ask questions with "last year" or "6 months ago", they will likely return no data.
+服务启动后，在您的浏览器中打开 `http://localhost:8080`。现在，您可以开始通过自然语言与您的 CRM 数据进行对话了。
 
-#### Real Salesforce Data
+---
 
-Create a [BigQuery Data Transfer for Salesforce](https://cloud.google.com/bigquery/docs/salesforce-transfer).
+## 许可证
 
-Make sure you transfer the following objects:
+本项目根据 Apache 2.0 许可证授权 - 详情请参阅 [LICENSE](LICENSE) 文件。
 
-* Account
-* Case
-* CaseHistory
-* Contact
-* CurrencyType
-* DatedConversionRate
-* Event
-* Lead
-* Opportunity
-* OpportunityHistory
-* RecordType
-* Task
-* User
+## 免责声明
 
-#### Deployment with your custom Salesforce.com metadata
-
-*COMING SOON!*
-
-This will allow you to use your customized metadata in addition to analyzing your real data replicated to BigQuery.
-
-### Run Locally
-
-* Run `.\run_local.sh`
-* Open `http://localhost:8080` in your browser.
-
-#### Deploy and Run in Cloud Run
-
-* Run `.\deploy_to_cloud_run.sh`
-
-> This deployment uses default Compute Service Account for Cloud Run.
-To make changes in how the deployment is done, adjust `gcloud` command in [deploy_to_cloud_run.py](utils/deploy_to_cloud_run.py)
-
-**Cloud Run Authentication Note**:
-
-By default, this script deploys a Cloud Run service that requires authentication.
-You can switch to unauthenticated mode in [Cloud Run](https://console.cloud.google.com/run) or configure a [Load Balancer and Identity Access Proxy](https://cloud.google.com/iap/docs/enabling-cloud-run) (recommended).
-
-## 📃 License
-
-This repository is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
-
-## 🗒️ Disclaimers
-
-This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
-
-Code and data from this repository are intended for demonstration purposes only. It is not intended for use in a production environment.
+这不是一个官方支持的 Google 产品。本项目不符合 [Google 开源软件漏洞奖励计划](https://bughunters.google.com/open-source-security) 的资格。本仓库中的代码和数据仅用于演示目的，不适用于生产环境。
