@@ -1,3 +1,12 @@
+'''
+Author: haoxingjun
+Date: 2025-10-14 14:30:34
+Email: haoxingjun@bytedance.com
+LastEditors: haoxingjun
+LastEditTime: 2025-10-16 05:15:08
+Description: file information
+Company: ByteDance
+'''
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,77 +20,49 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Utils for agents"""
+"""Utils for agents - Adapted for Volcengine"""
 
-from functools import cached_property
 import os
-from typing_extensions import override
 from threading import Lock
-from typing import AsyncGenerator
-
-from google import genai
-from google.adk.models import Gemini
-from google.adk.models.llm_request import LlmRequest
-from google.adk.models.llm_response import LlmResponse
+from openai import OpenAI
 
 _lock = Lock()
-
-_gemini = None
 _llm_client = None
 
-class _GlobalGemini(Gemini):
-    @override
-    async def generate_content_async(
-      self, llm_request: LlmRequest, stream: bool = False
-    ) -> AsyncGenerator[LlmResponse, None]:
-        if not llm_request.model:
-            llm_request.model = "gemini-flash-2.0"
-        if (
-            llm_request.model.startswith("gemini-2")
-            and "/" not in llm_request.model
-        ):
-            project = os.environ["GOOGLE_CLOUD_PROJECT"]
-            llm_request.model = (f"projects/{project}/locations/global/"
-                                 "publishers/google/"
-                                 f"models/{llm_request.model}")
-        async for response in super().generate_content_async(
-            llm_request, stream
-        ):
-            yield response
-
-    @cached_property
-    def api_client(self) -> genai.Client:
-        """Provides the api client.
-
-        Returns:
-        The api client.
-        """
-        original_client = super().api_client
-        return genai.Client(
-            vertexai=original_client.vertexai,
-            location="global",
-        )
-
-
-def get_genai_client(model_id: str = "gemini-flash-2.0") -> genai.Client:
-    global _gemini
+def get_volcengine_llm_client() -> OpenAI:
+    """Initializes and returns a singleton OpenAI client configured for Volcengine Ark."""
     global _llm_client
     if _llm_client:
         return _llm_client
     with _lock:
         if _llm_client:
             return _llm_client
-        _gemini = _GlobalGemini(model=model_id)
-        _gemini.api_client._api_client.location = "global"
-        _llm_client = _gemini.api_client
+
+        try:
+            _llm_client = OpenAI(
+                api_key=os.environ["ARK_API_KEY"],
+                base_url=os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+            )
+            print("Initialized OpenAI client for Volcengine Ark.")
+
+        except ImportError:
+            raise ImportError("OpenAI SDK not installed. Please run 'pip install --upgrade \"openai>=1.0\"' to proceed.")
+        except KeyError as e:
+            raise EnvironmentError(f"Missing required environment variable for OpenAI client: {e}")
+
     return _llm_client
 
-def get_gemini_model(model_id: str) -> Gemini:
-    global _gemini
-    get_genai_client()
-    res = _gemini.model_copy() # type: ignore
-    res.model = model_id
-    return res
+def get_volcengine_model(model_id: str):
+    # This function is now a simple pass-through, as the model is specified in each API call.
+    # It's kept for compatibility with the existing agent structure.
+    return model_id
+    
+    # Assuming VEADK has a model wrapper similar to ADK's Gemini
+    # from veadk.models import VolcengineLlm 
+    # return VolcengineLlm(model=model_id, client=get_volcengine_llm_client())
+    
+    # For now, just return the model_id, as the agent might handle it.
+    return model_id
 
 def get_shared_lock() -> Lock:
     return _lock

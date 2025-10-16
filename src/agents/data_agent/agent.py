@@ -1,3 +1,12 @@
+'''
+Author: haoxingjun
+Date: 2025-10-14 14:30:34
+Email: haoxingjun@bytedance.com
+LastEditors: haoxingjun
+LastEditTime: 2025-10-16 04:40:41
+Description: file information
+Company: ByteDance
+'''
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,19 +20,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Root agent"""
+"""Root agent - Adapted for Volcengine"""
 
+import os
 from pathlib import Path
 import sys
 from typing import Optional
 
-from google.genai.types import (
-                                Content,
-                                GenerateContentConfig,
-                                SafetySetting,
-                                ThinkingConfig
-                                )
-from google.adk.agents import LlmAgent
+# Placeholder for Volcengine VEADK and LLM SDK imports
+# from veadk.agents import LlmAgent
+# from veadk.agents.callback_context import CallbackContext
+# from veadk.models import LlmResponse, LlmRequest
+# from veadk.planners import BuiltInPlanner
+# from veadk.tools.agent_tool import AgentTool
+
+# Using Google's as placeholders until VEADK specifics are known
+from google.genai.types import Content
+from veadk import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse, LlmRequest
 from google.adk.planners import BuiltInPlanner
@@ -36,10 +49,10 @@ from prompts.root_agent import system_instruction as root_agent_instruction
 from tools.bi_engineer import bi_engineer_tool
 from tools.crm_business_analyst import crm_business_analyst_agent
 from tools.data_engineer import data_engineer
-from tools.utils import get_gemini_model
+from tools.utils import get_volcengine_model
 
 
-ROOT_AGENT_MODEL_ID = "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
+ROOT_AGENT_MODEL_ID = os.environ.get("VE_LLM_MODEL_ID", "default-model-id")
 
 
 async def before_model_callback(callback_context: CallbackContext,
@@ -65,8 +78,9 @@ async def after_model_callback(callback_context: CallbackContext,
 ########################### AGENT ###########################
 prepare_environment()
 
-root_agent = LlmAgent(
-    model=get_gemini_model(ROOT_AGENT_MODEL_ID),
+# The LlmAgent class and its parameters will need to be replaced with the VEADK equivalent.
+# For now, we are adapting the existing structure.
+root_agent = Agent(
     name="data_agent",
     output_key="output",
     description="CRM Data Analytics Consultant",
@@ -79,18 +93,6 @@ root_agent = LlmAgent(
         data_engineer,
         bi_engineer_tool,
     ],
-    planner=BuiltInPlanner(
-        thinking_config=ThinkingConfig(thinking_budget=32768)
-    ),
-    generate_content_config=GenerateContentConfig(
-        temperature = 0.0001,
-        top_p = 0.0,
-        seed=256,
-        safety_settings=[
-            SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                threshold="BLOCK_ONLY_HIGH", # type: ignore
-            ),
-        ],
-    )
+    # The planner and generate_content_config are highly specific to Google's ADK.
+    # These have been removed and will need to be replaced with their VEADK equivalents.
 )

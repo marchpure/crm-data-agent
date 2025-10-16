@@ -56,9 +56,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import Session
 
 sys.path.append(str(Path(__file__).parent.parent))
-from shared.firestore_session_service import (
-    FirestoreSessionService as SessionService
-)
+from google.adk.sessions import InMemorySessionService
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +158,7 @@ def get_fast_api_app(
     memory_service = InMemoryMemoryService()
 
     # Build the Session service
-    session_service = SessionService(
-        database=os.environ["FIRESTORE_SESSION_DATABASE"],
-        sessions_collection=os.getenv("FIRESTORE_SESSION_COLLECTION", "/")
-    )
+    session_service = InMemorySessionService()
 
 
     @app.get("/debug/trace/{event_id}")

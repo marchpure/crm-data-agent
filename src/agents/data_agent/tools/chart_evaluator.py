@@ -18,11 +18,14 @@ from google.genai.types import Content, GenerateContentConfig, Part, SafetySetti
 
 from pydantic import BaseModel
 
-from .utils import get_genai_client
+from .utils import get_volcengine_llm_client
 from prompts.chart_evaluator import prompt as chart_evaluator_prompt
 
 
-CHART_EVALUATOR_MODEL_ID =  "gemini-2.0-flash-001"
+import os
+
+MODEL_ID = os.environ.get("VE_LLM_MODEL_ID", "doubao-pro-32k")
+CHART_EVALUATOR_MODEL_ID = MODEL_ID
 
 class EvaluationResult(BaseModel):
     is_good: bool
@@ -48,32 +51,37 @@ def evaluate_chart(png_image: bytes,
                                            chart_json=chart_json_text,
                                             question=question)
 
-    image_part = Part.from_bytes(mime_type="image/png", data=png_image)
-    eval_result = get_genai_client().models.generate_content(
-        model=CHART_EVALUATOR_MODEL_ID,
-        contents=Content(
-            role="user",
-            parts=[
-                image_part, # type: ignore
-                Part.from_text(text=prompt)
-            ]
-        ),
-        config=GenerateContentConfig(
-            response_schema=EvaluationResult,
-            response_mime_type="application/json",
-            system_instruction=f"""
+    import base64
+    import json
+
+    image_b64 = base64.b64encode(png_image).decode("utf-8")
+
+    system_prompt = """
 You are an experienced Business Intelligence UX designer.
 You can look at a chart or a dashboard, and tell if it the right one for the question.
-""".strip(),
-            temperature=0.1,
-            top_p=0.0,
-            seed=1,
-            safety_settings=[
-            SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                threshold="BLOCK_ONLY_HIGH", # type: ignore
-            ),
-        ])
-    )
+""".strip()
 
-    return eval_result.parsed # type: ignore
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image",
+                    "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                },
+            ],
+        },
+    ]
+
+    completion = get_volcengine_llm_client().chat.completions.create(
+        model=CHART_EVALUATOR_MODEL_ID,
+        messages=messages,
+        temperature=0.1,
+        max_tokens=4096,
+        response_format={"type": "json_object"},
+    )
+    eval_json_text = completion.choices[0].message.content
+
+    return EvaluationResult.model_validate_json(eval_json_text)

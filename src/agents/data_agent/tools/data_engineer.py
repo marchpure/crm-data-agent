@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Data Engineer Agent"""
+"""Data Engineer Agent - Adapted for Volcengine EMR Serverless Presto"""
 
 from functools import cache
 import json
@@ -22,34 +22,42 @@ from typing import Tuple
 
 from pydantic import BaseModel
 
-from google.cloud.exceptions import BadRequest, NotFound
-from google.cloud.bigquery import Client, QueryJobConfig
-from google.genai.types import (Content,
-                                GenerateContentConfig,
-                                Part,
-                                SafetySetting)
+# Volcengine EMR Serverless Presto related imports
+from serverless.client import ServerlessClient
+from serverless.auth import StaticCredentials
+from serverless.task import SQLTask
+from serverless.exceptions import QuerySdkError
+
+# Volcengine LLM related imports (assuming a similar structure to Gemini)
+# This will be replaced with the actual Volcengine LLM SDK
+from volcengine.maas.exception import MaasException
 from google.adk.tools import ToolContext
 
-from .utils import get_genai_client
+from .utils import get_volcengine_llm_client
 from prompts.data_engineer import (system_instruction
                                    as data_engineer_instruction,
                                    prompt as data_engineer_prompt)
 from prompts.sql_correction import (instruction as sql_correction_instruction,
                                     prompt as sql_correction_prompt)
 
-DATA_ENGINEER_AGENT_MODEL_ID = "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
-SQL_VALIDATOR_MODEL_ID =  "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
+# These will be replaced with Volcengine model IDs from environment variables
+MODEL_ID = os.environ.get("VE_LLM_MODEL_ID", "doubao-seed-1-6-250615")
+DATA_ENGINEER_AGENT_MODEL_ID = MODEL_ID
+SQL_VALIDATOR_MODEL_ID = MODEL_ID
 _DEFAULT_METADATA_FILE = "sfdc_metadata.json"
 
 @cache
 def _init_environment():
-    global _bq_project_id, _data_project_id, _location, _dataset
-    global _sfdc_metadata, _sfdc_metadata_dict, _sfdc_metadata
+    global _access_key, _secret_key, _region, _catalog, _database
+    global _sfdc_metadata, _sfdc_metadata_dict
 
-    _bq_project_id = os.environ["BQ_PROJECT_ID"]
-    _data_project_id = os.environ["SFDC_DATA_PROJECT_ID"]
-    _location = os.environ["BQ_LOCATION"]
-    _dataset = os.environ["SFDC_BQ_DATASET"]
+    # Load Volcengine and EMR Presto credentials from environment
+    _access_key = os.environ["VOLCENGINE_AK"]
+    _secret_key = os.environ["VOLCENGINE_SK"]
+    _region = os.environ["VOLCENGINE_REGION"]
+    _catalog = os.environ["EMR_CATALOG"]
+    _database = os.environ["EMR_DATABASE"]
+
     _sfdc_metadata_path = os.environ.get("SFDC_METADATA_FILE",
                                         _DEFAULT_METADATA_FILE)
     if not Path(_sfdc_metadata_path).exists():
@@ -60,57 +68,77 @@ def _init_environment():
     _sfdc_metadata = Path(_sfdc_metadata_path).read_text(encoding="utf-8")
     _sfdc_metadata_dict = json.loads(_sfdc_metadata)
 
-    # Only keep metadata for tables that exist in the dataset.
+    # Metadata enhancement logic can remain, as it's not tied to a specific DB
+    # The part that connects to the DB to verify tables can be adapted
     _final_dict = {}
-    client = Client(_bq_project_id, location=_location)
-    for table in client.list_tables(f"{_data_project_id}.{_dataset}"):
-        if table.table_id in _sfdc_metadata_dict:
-            table_dict = _sfdc_metadata_dict[table.table_id]
-            _final_dict[table.table_id] = table_dict
-            table_obj = client.get_table(f"{_data_project_id}.{_dataset}."
-                                        f"{table.table_id}")
-            for f in table_obj.schema:
-                if f.name in table_dict["columns"]:
-                    table_dict["columns"][f.name]["field_type"] = f.field_type
+    client = ServerlessClient(credentials=StaticCredentials(_access_key, _secret_key),
+                              region=_region, endpoint='open.volcengineapi.com', service='emr_serverless')
+
+    try:
+        # To list tables, we can run "SHOW TABLES"
+        query = f'set tqs.query.engine.type = presto; SHOW TABLES FROM "{_catalog}"."{_database}"'
+        job = client.execute(task=SQLTask(name='list_tables_for_metadata', query=query, conf={"tqs.query.engine.type": "presto"}), is_sync=True)
+
+        if job.is_success():
+            tables = job.get_result()
+            for row in tables:
+                table_name = row[0]
+                if table_name in _sfdc_metadata_dict:
+                    table_dict = _sfdc_metadata_dict[table_name]
+                    _final_dict[table_name] = table_dict
+                    # We can't easily get column types from SHOW TABLES, so we trust the metadata file for now.
+                    # A "DESCRIBE <table_name>" query could be used for more detail if needed.
+        else:
+            print(f"Failed to list tables for metadata enhancement: {job.info}")
+
+    except QuerySdkError as e:
+        print(f"Error listing tables from EMR Presto: {e}")
+
 
     _sfdc_metadata = json.dumps(_final_dict, indent=2)
     _sfdc_metadata_dict = _final_dict
 
-
 def _sql_validator(sql_code: str) -> Tuple[str, str]:
-    """SQL Validator. Validates BigQuery SQL query using BigQuery client.
-    May also change the query to correct known errors in-place.
+    """SQL Validator. Validates Presto SQL query using EMR Serverless client.
+    It doesn't execute the query, but sends it for validation (e.g., by running EXPLAIN).
 
         Args:
-        sql_code (str): BigQuery SQL code to validate.
+        sql_code (str): Presto SQL code to validate.
 
     Returns:
         tuple(str,str):
             str: "SUCCESS" if SQL is valid, error text otherwise.
-            str: modified SQL code (always update your original query with it).
+            str: original SQL code (as we don't modify it in-place).
     """
-    print("Running SQL validator.")
-    sql_code_to_run = sql_code
-    for k,v in _sfdc_metadata_dict.items():
-        sfdc_name = v["salesforce_name"]
-        full_name = f"`{_data_project_id}.{_dataset}.{sfdc_name}`"
-        sql_code_to_run = sql_code_to_run.replace(
-            full_name,
-            f"`{_data_project_id}.{_dataset}.{k}`"
-        )
+    print("Running Presto SQL validator.")
+    # Presto doesn't have a 'dry_run' config like BigQuery.
+    # A common way to validate syntax is to prepend EXPLAIN to the query.
+    # This checks the syntax and analyzes the query plan without executing it.
+    validation_query = f"EXPLAIN {sql_code}"
 
-    client = Client(project=_bq_project_id, location=_location)
+    # Add the engine type setting
+    full_query = f'set tqs.query.engine.type = presto; {validation_query}'
+
+    client = ServerlessClient(credentials=StaticCredentials(_access_key, _secret_key),
+                              region=_region, endpoint='open.volcengineapi.com', service='emr_serverless')
     try:
-        dataset_location = client.get_dataset(
-                                f"{_data_project_id}.{_dataset}").location
-        job_config = QueryJobConfig(dry_run=True, use_query_cache=False)
-        client.query(sql_code,
-                     job_config=job_config,
-                     location=dataset_location).result()
-    except (BadRequest, NotFound) as ex:
-        err_text = ex.args[0].strip()
-        return f"ERROR: {err_text}", sql_code_to_run
-    return "SUCCESS", sql_code_to_run
+        job = client.execute(task=SQLTask(name=f'validate_sql_{uuid.uuid4().hex}', query=full_query, conf={"tqs.query.engine.type": "presto"}), is_sync=True)
+        if job.is_success():
+            print("SQL syntax appears valid.")
+            return "SUCCESS", sql_code
+        else:
+            err_text = f"Query failed validation. Status: {job.status}. Info: {job.info}"
+            print(err_text)
+            return err_text, sql_code
+
+    except QuerySdkError as e:
+        err_text = f"ERROR: {e}"
+        print(err_text)
+        return err_text, sql_code
+    except Exception as ex:
+        err_text = f"An unexpected error occurred during validation: {ex}"
+        print(err_text)
+        return err_text, sql_code
 
 
 class SQLResult(BaseModel):
@@ -124,112 +152,97 @@ async def data_engineer(request: str, tool_context: ToolContext) -> SQLResult:
     """
     This is your Senior Data Engineer.
     They have extensive experience in working with CRM data.
-    They write clean and efficient SQL in its BigQuery dialect.
+    They write clean and efficient SQL in its Presto dialect for querying EMR Serverless.
     When given a question or a set of steps,
     they can understand whether the problem can be solved with the data you have.
-    The result is a BigQuery SQL Query.
+    The result is a Presto SQL Query.
     """
     _init_environment()
+    # The prompt needs to be updated to specify Presto SQL dialect
     prompt = data_engineer_prompt.format(
         request=request,
-        data_project_id=_data_project_id,
-        dataset=_dataset,
+        # These project/dataset IDs are no longer relevant in the same way
+        data_project_id=_database,
+        dataset=_database,
         sfdc_metadata=_sfdc_metadata
     )
 
-    sql_code_result = get_genai_client().models.generate_content(
-        model=DATA_ENGINEER_AGENT_MODEL_ID,
-        contents=Content(
-            role="user",
-            parts=[
-                Part.from_text(text=prompt)
-            ]
-        ),
-        config=GenerateContentConfig(
-            response_schema=SQLResult,
-            response_mime_type="application/json",
-            system_instruction=data_engineer_instruction,
-            temperature=0.0,
-            top_p=0.0,
-            seed=1,
-            safety_settings=[
-                SafetySetting(
-                    category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                    threshold="BLOCK_ONLY_HIGH", # type: ignore
-                ),
-            ]
+    # This part is now replaced with the Volcengine LLM SDK
+    messages = [
+        {"role": "system", "content": data_engineer_instruction},
+        {"role": "user", "content": prompt}
+    ]
+
+    try:
+        completion = get_volcengine_llm_client().chat.completions.create(
+            model=DATA_ENGINEER_AGENT_MODEL_ID,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=4096,
         )
-    )
-    sql_result: SQLResult = sql_code_result.parsed # type: ignore
-    sql = sql_result.sql_code
+        sql = completion.choices[0].message.content
+
+        # The original code expected a SQLResult object. Since the new API returns
+        # raw text, we create the object manually to maintain compatibility with
+        # the rest of the function.
+        sql_result = SQLResult(sql_code=sql, sql_code_file_name="")
+
+    except Exception as e:
+        raise RuntimeError(f"Volcengine Maas API call failed: {e}")
 
     print(f"SQL Query candidate: {sql}")
 
-    MAX_FIX_ATTEMPTS = 32
+    MAX_FIX_ATTEMPTS = 3
     validating_query = sql
     is_good = False
 
-    for __ in range(MAX_FIX_ATTEMPTS):
-        chat_session = None
+    for i in range(MAX_FIX_ATTEMPTS):
+        print(f"SQL Validation Attempt {i+1}/{MAX_FIX_ATTEMPTS}")
         validator_result, validating_query = _sql_validator(validating_query)
-        print(f"SQL Query candidate: {validating_query}")
         if validator_result == "SUCCESS":
             is_good = True
             break
         print(f"ERROR: {validator_result}")
-        if not chat_session:
-            chat_session = get_genai_client().chats.create(
-                model=SQL_VALIDATOR_MODEL_ID,
-                config=GenerateContentConfig(
-                    response_schema=SQLResult,
-                    response_mime_type="application/json",
-                    system_instruction=sql_correction_instruction.format(
-                        data_project_id=_data_project_id,
-                        dataset=_dataset,
-                        sfdc_metadata=_sfdc_metadata
-                    ),
-                    temperature=0.0,
-                    top_p=0.000001,
-                    seed=0,
-                    safety_settings=[
-                        SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                            threshold="BLOCK_ONLY_HIGH", # type: ignore
-                        ),
-                    ]
-                )
-            )
-        correcting_prompt = sql_correction_prompt.format(
-            validating_query=validating_query,
-            validator_result=validator_result
+
+        # This correction loop will also need to use the Volcengine LLM
+        correction_prompt = sql_correction_prompt.format(
+            sql_query=validating_query,
+            error_message=validator_result,
+            sfdc_metadata=_sfdc_metadata,
+            data_project_id=_database,
+            dataset=_database,
         )
-        corr_result = chat_session.send_message(correcting_prompt).parsed
-        validating_query = corr_result.sql_code # type: ignore
-    if is_good:
-        print(f"Final result: {validating_query}")
-        # sql_markdown = f"```sql\n{validating_query}\n```"
-        sql_file_prefix = f"query_{uuid.uuid4().hex}"
-        # await tool_context.save_artifact(
-        #     f"{sql_file_prefix}.md",
-        #     Part.from_bytes(
-        #         mime_type="text/markdown",
-        #         data=sql_markdown.encode("utf-8")
-        #     )
-        # )
-        await tool_context.save_artifact(
-            f"{sql_file_prefix}.sql",
-            Part.from_bytes(
-                mime_type="text/x-sql",
-                data=validating_query.encode("utf-8")
-            )
+        correction_messages = [
+            {"role": "system", "content": sql_correction_instruction},
+            {"role": "user", "content": correction_prompt}
+        ]
+        correction_completion = get_volcengine_llm_client().chat.completions.create(
+            model=SQL_VALIDATOR_MODEL_ID,
+            messages=correction_messages,
+            temperature=0.0,
+            max_tokens=4096,
         )
-        return SQLResult(
-            sql_code=validating_query,
-            sql_code_file_name=f"{sql_file_prefix}.sql",
-        )
-    else:
-        return SQLResult(
-            sql_code="-- no query",
-            sql_code_file_name="none.sql",
-            error=f"## Could not create a valid query in {MAX_FIX_ATTEMPTS}"
-                   " attempts.")
+        # The original code parsed a SQLResult object. The new API returns raw text.
+        # We assume the model is prompted to return only the SQL code.
+        validating_query = correction_completion.choices[0].message.content
+        print(f"Corrected SQL Query candidate: {validating_query}")
+
+
+    if not is_good:
+        print("Failed to generate a valid SQL query after multiple attempts.")
+        # Return the last failed attempt with the error
+        sql_result.sql_code = validating_query
+        sql_result.error = validator_result
+        return sql_result
+
+    # Save the validated SQL to a file
+    file_name = f"presto_query_{uuid.uuid4().hex}.sql"
+    # This should be saved to a shared location, possibly TOS, if the agent is distributed
+    with open(file_name, "w", encoding="utf-8") as f:
+        f.write(validating_query)
+
+    sql_result.sql_code = validating_query
+    sql_result.sql_code_file_name = file_name
+    sql_result.error = ""
+
+    return sql_result

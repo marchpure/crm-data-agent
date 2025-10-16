@@ -21,17 +21,24 @@ import sys
 
 
 _env_requirements = {
-    "GOOGLE_CLOUD_PROJECT": None, # None value means it has to be non-empty
-    "GOOGLE_CLOUD_LOCATION": None,
+    # Volcengine Credentials
+    "VOLCENGINE_AK": None,
+    "VOLCENGINE_SK": None,
+    "VOLCENGINE_REGION": "cn-beijing",
 
-    # `$`` at the beginning refers to another variable
-    "BQ_PROJECT_ID": "$GOOGLE_CLOUD_PROJECT",
-    "SFDC_DATA_PROJECT_ID": "$BQ_PROJECT_ID",
-    "SFDC_BQ_DATASET": None,
-    "FIRESTORE_SESSION_DATABASE": None,
-    "BQ_LOCATION": "US",
-    "SFDC_METADATA_FILE": "sfdc_metadata.json", # default value
-    "AI_STORAGE_BUCKET": None,
+    # EMR Serverless Presto Configuration
+    "EMR_CATALOG": "hive_catalog",
+    "EMR_DATABASE": "test_db",
+
+    # Volcengine Large Language Model Configuration
+    "VE_LLM_MODEL_ID": None,
+
+    # Volcengine Services Configuration
+    "VE_TOS_BUCKET": None,
+
+
+    # Metadata Configuration
+    "SFDC_METADATA_FILE": "sfdc_metadata.json",
 }
 _prepared = False
 
@@ -54,13 +61,6 @@ def get_env_values() -> dict:
     for v in values:
         if v in os.environ:
             values[v] = os.environ[v]
-    if (
-        "FIREBASE_SESSION_DATABASE" in values
-        and "FIRESTORE_SESSION_DATABASE" not in values
-    ):
-        values["FIRESTORE_SESSION_DATABASE"] = values[
-            "FIREBASE_SESSION_DATABASE"
-        ]
     return values
 
 
@@ -73,18 +73,12 @@ def prepare_environment():
         logging.warning(".env file not found.")
     else:
         load_dotenv(dotenv_path=_get_dotenv_file(), override=True)
-    if (
-        "FIREBASE_SESSION_DATABASE" in os.environ
-        and "FIRESTORE_SESSION_DATABASE" not in os.environ
-    ):
-        os.environ["FIRESTORE_SESSION_DATABASE"] = os.environ[
-            "FIREBASE_SESSION_DATABASE"
-        ]
+
     for name, val in _env_requirements.items():
         if name in os.environ and len(os.environ[name].strip()) > 0:
             continue
         if val is None or val.strip() == "":
-            logging.error((f"{name} environment variable must be set"
+            logging.error((f"{name} environment variable must be set "
                           "(check .env file)."))
             sys.exit(1)
         elif val.startswith("$"):
@@ -93,7 +87,8 @@ def prepare_environment():
         else:
             os.environ[name] = val
 
-    from google.cloud.aiplatform import init
-    init(location="global")
+    # Removed Google Cloud AI Platform initialization
+    # from google.cloud.aiplatform import init
+    # init(location="global")
 
     _prepared = True

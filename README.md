@@ -83,32 +83,17 @@ or, with `uv`:
 
 > [src/.env-template](src/.env-template) is a template to use for your `.env` file.
 
-### Configuration variables
+### Environment Variables
 
-> `src/.env` must be created and variables specified before taking further steps in deployment, local or cloud.
+Before running the application, you need to set up the necessary environment variables. Copy the `src/.env-template` file to `src/.env` and fill in the required values:
 
-`GOOGLE_CLOUD_PROJECT` - [REQUIRED] Project Id of a Google Cloud Project that will be used with Vertex AI (and Cloud Run if deployed).
+- `ARK_API_KEY`: [REQUIRED] Your Volcengine Ark API Key.
+- `VE_LLM_MODEL_ID`: [REQUIRED] The model endpoint ID from the Volcengine Ark platform (e.g., `doubao-pro-32k`).
+- `EMR_CATALOG`: [REQUIRED] The catalog name in your EMR Serverless Presto instance.
+- `EMR_DATABASE`: [REQUIRED] The database name within the specified catalog that contains your CRM data.
 
-`GOOGLE_CLOUD_LOCATION` - [REQUIRED] Google Cloud Region to use with Vertex AI (and Cloud Run if deployed).
-
-`AI_STORAGE_BUCKET` - [REQUIRED] Cloud Storage Bucket for ADK Asset Service and for staging Vertex AI assets.
-Please create one.
-
-`BQ_LOCATION` - [REQUIRED] BigQuery location of the Salesforce datasets.
-
-`SFDC_BQ_DATASET` - [REQUIRED] Name of the Salesforce dataset (in project *SFDC_DATA_PROJECT_ID*).
-
-`FIRESTORE_SESSION_DATABASE` - [REQUIRED] Name of a Firestore database. Please create one. ADK will store its session data here.
-
-`BQ_PROJECT_ID` - *[OPTIONAL]* Project Id of a Google Cloud Project that will be used for running BigQuery query jobs. If not defined, `GOOGLE_CLOUD_PROJECT` value will be used.
-
-`SFDC_DATA_PROJECT_ID` - *[OPTIONAL]* Project Id of a Google Cloud Project of the Salesforce dataset.
-If not defined, `BQ_LOCATION` value will be used.
-
-`SFDC_METADATA_FILE` - *[OPTIONAL]* Salesforce Metadata file (do not change this value if using the demo data).
-
-> If you are deploying a demo, do not set `BQ_PROJECT_ID` and `SFDC_DATA_PROJECT_ID`.
-> All resources will be created in GOOGLE_CLOUD_PROJECT project.
+Optional:
+- `ARK_BASE_URL`: The base URL for the Volcengine Ark API. Defaults to `https://ark.cn-beijing.volces.com/api/v3`.
 
 **If you deploy the agent to Cloud Run**, its service account must have the following roles:
 

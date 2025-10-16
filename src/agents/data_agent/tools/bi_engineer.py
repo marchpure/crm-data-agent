@@ -28,30 +28,34 @@ from google.genai.types import (
     SafetySetting,
     ThinkingConfig
 )
-from google.cloud.bigquery import Client, QueryJobConfig
-from google.cloud.exceptions import BadRequest, NotFound
+from serverless.client import ServerlessClient
+from serverless.auth import StaticCredentials
+from serverless.task import SQLTask
+from serverless.exceptions import QuerySdkError
 
 import altair as alt
 from altair.vegalite.schema import core as alt_core
 import pandas as pd
 
-from .utils import get_genai_client
+from .utils import get_volcengine_llm_client
 from prompts.bi_engineer import prompt as bi_engineer_prompt
 from tools.chart_evaluator import evaluate_chart
 
 
 MAX_RESULT_ROWS_DISPLAY = 50
-BI_ENGINEER_AGENT_MODEL_ID = "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
-BI_ENGINEER_FIX_AGENT_MODEL_ID = "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
+MODEL_ID = os.environ.get("VE_LLM_MODEL_ID", "doubao-pro-32k")
+BI_ENGINEER_AGENT_MODEL_ID = MODEL_ID
+BI_ENGINEER_FIX_AGENT_MODEL_ID = MODEL_ID
 
 
 @cache
 def _init_environment():
-    global _bq_project_id, _data_project_id, _location, _dataset
-    _bq_project_id = os.environ["BQ_PROJECT_ID"]
-    _data_project_id = os.environ["SFDC_DATA_PROJECT_ID"]
-    _location = os.environ["BQ_LOCATION"]
-    _dataset = os.environ["SFDC_BQ_DATASET"]
+    global _access_key, _secret_key, _region, _catalog, _database
+    _access_key = os.environ["VOLCENGINE_AK"]
+    _secret_key = os.environ["VOLCENGINE_SK"]
+    _region = os.environ["VOLCENGINE_REGION"]
+    _catalog = os.environ["EMR_CATALOG"]
+    _database = os.environ["EMR_DATABASE"]
 
 class VegaResult(BaseModel):
     vega_lite_json: str
@@ -106,27 +110,14 @@ def _enhance_parameters(vega_chart: dict, df: pd.DataFrame) -> dict:
 
 
 def _create_chat(model: str, history: list, max_thinking: bool = False):
-    return get_genai_client().chats.create(
+    messages = history + [{"role": "user", "content": ""}]
+    completion = get_volcengine_llm_client().chat.completions.create(
         model=model,
-        config=GenerateContentConfig(
-            temperature=0.1,
-            top_p=0.0,
-            seed=256,
-            response_schema=VegaResult,
-            response_mime_type="application/json",
-            safety_settings=[
-                SafetySetting(
-                    category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                    threshold="BLOCK_ONLY_HIGH", # type: ignore
-                ),
-            ],
-            thinking_config=(
-                ThinkingConfig(thinking_budget=32768) if max_thinking
-                else None),
-            max_output_tokens=65536
-        ),
-        history=history
+        messages=messages,
+        temperature=0.1,
+        max_tokens=4096,
     )
+    return completion
 
 
 
@@ -203,18 +194,26 @@ async def bi_engineer_tool(original_business_question: str,
     _init_environment()
     sql_code_part = await tool_context.load_artifact(sql_file_name)
     sql_code = sql_code_part.inline_data.data.decode("utf-8") # type: ignore
-    client = Client(project=_bq_project_id, location=_location)
+    client = ServerlessClient(credentials=StaticCredentials(_access_key, _secret_key),
+                              region=_region, endpoint='open.volcengineapi.com', service='emr_serverless')
     try:
-        dataset_location = client.get_dataset(
-                                f"{_data_project_id}.{_dataset}").location
-        job_config = QueryJobConfig(use_query_cache=False)
-        df: pd.DataFrame = client.query(sql_code,
-                     job_config=job_config,
-                     location=dataset_location).result().to_dataframe()
+        full_query = f'set tqs.query.engine.type = presto; {sql_code}'
+        job = client.execute(task=SQLTask(name=f'execute_sql_{uuid.uuid4().hex}', query=full_query, conf={"tqs.query.engine.type": "presto"}), is_sync=True)
+        if job.is_success():
+            result = job.get_result()
+            # Assuming the result is a list of lists, convert to DataFrame
+            if result:
+                df = pd.DataFrame(result[1:], columns=result[0])
+            else:
+                df = pd.DataFrame()
+        else:
+            err_text = f"Query failed execution. Status: {job.status}. Info: {job.info}"
+            return f"EMR PRESTO ERROR: {err_text}"
+
         df = _fix_df_dates(df)
-    except (BadRequest, NotFound) as ex:
-        err_text = ex.args[0].strip()
-        return f"BIGQUERY ERROR: {err_text}"
+    except QuerySdkError as ex:
+        err_text = f"ERROR: {ex}"
+        return f"EMR PRESTO ERROR: {err_text}"
 
     if notes:
         notes_text = f"\n\n**Important notes about the chart:** \n{notes}\n\n"
@@ -240,14 +239,18 @@ async def bi_engineer_tool(original_business_question: str,
     )
 
     vega_chart_json = ""
-    vega_fix_chat = None
-    while True:
-        vega_chat = _create_chat(BI_ENGINEER_AGENT_MODEL_ID, [])
-        chart_results = vega_chat.send_message(chart_prompt)
-        chart_model = chart_results.parsed # type: ignore
-        if chart_model:
-            break
-    chart_json = chart_model.vega_lite_json # type: ignore
+    messages = []
+    messages = [
+        {"role": "user", "content": chart_prompt}
+    ]
+    completion = get_volcengine_llm_client().chat.completions.create(
+        model=BI_ENGINEER_AGENT_MODEL_ID,
+        messages=messages,
+        temperature=0.1,
+        max_tokens=8192,
+    )
+    chart_json = completion.choices[0].message.content
+    messages.append({"role": "assistant", "content": chart_json})
 
     for _ in range(5): # 5 tries to make a good chart
         for _ in range(10):
@@ -279,14 +282,15 @@ ERROR {type(ex).__name__}: {str(ex)}
 """.strip()
                 error_reason = message
                 print(message)
-                if not vega_fix_chat:
-                    vega_fix_chat = _create_chat(BI_ENGINEER_FIX_AGENT_MODEL_ID,
-                                                 vega_chat.get_history(),
-                                                 True)
-                print("Fixing...")
-                chart_json = vega_fix_chat.send_message(
-                    message
-                ).parsed.vega_lite_json # type: ignore
+                messages.append({"role": "user", "content": message})
+                completion = get_volcengine_llm_client().chat.completions.create(
+                    model=BI_ENGINEER_FIX_AGENT_MODEL_ID,
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=8192,
+                )
+                chart_json = completion.choices[0].message.content
+                messages.append({"role": "assistant", "content": chart_json})
 
         if not error_reason:
             with io.BytesIO() as file:
@@ -308,11 +312,8 @@ ERROR {type(ex).__name__}: {str(ex)}
             break
 
         print(f"Feedback:\n{error_reason}.\n\nWorking on another version...")
-        history = (vega_fix_chat.get_history()
-                   if vega_fix_chat
-                   else vega_chat.get_history())
-        vega_chat = _create_chat(BI_ENGINEER_AGENT_MODEL_ID, history)
-        chart_json = vega_chat.send_message(f"""
+        history = messages
+        feedback_prompt = f"""
             Fix the chart based on the feedback.
             Only output Vega-Lite json.
 
@@ -325,7 +326,16 @@ ERROR {type(ex).__name__}: {str(ex)}
             ``json
             {vega_chart_json}
             ````
-            """).parsed.vega_lite_json # type: ignore
+            """
+        messages.append({"role": "user", "content": feedback_prompt})
+        completion = get_volcengine_llm_client().chat.completions.create(
+            model=BI_ENGINEER_AGENT_MODEL_ID,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=8192,
+        )
+        chart_json = completion.choices[0].message.content
+        messages.append({"role": "assistant", "content": chart_json})
 
     print(f"Done working on a chart.")
     if error_reason:

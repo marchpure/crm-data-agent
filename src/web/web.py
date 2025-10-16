@@ -32,8 +32,7 @@ from google.genai.types import Content, Part
 
 from google.adk.events import Event, EventActions
 from google.adk.sessions import Session
-from shared.firestore_session_service import (FirestoreSessionService
-                                            as SessionService)
+
 
 from PIL import Image
 
@@ -523,41 +522,21 @@ material_theme_style = """
 """
 st.markdown(material_theme_style, unsafe_allow_html=True)
 
-st.markdown("""
-<a href="/" target="_blank" style="color: var(--md-sys-color-on-primary-container); text-decoration: none;">
-<h1><i class='material-icons' style="color: var(--md-sys-color-primary)">leaderboard</i> Chat with your Data</h1>
-</a>
-""".strip(), unsafe_allow_html=True)
-st.subheader("This Agent can perform Data Analytics tasks "
-             "over Salesforce data in BigQuery.")
-st.markdown("[github.com/vladkol/crm-data-agent]"
-            "(https://goo.gle/cloud-crm-data-agent?utm_campaign=CDR_0xc245fc42_default_b417442301&utm_medium=external&utm_source=blog)")
-st.markdown("<h4>Examples of questions:</h4>", unsafe_allow_html=True)
-st.markdown("""
-<ul style="list-style: none; padding-left: 0;">
-    <li><i class='material-icons'>trending_up</i> Lead conversion trends in the US.</li>
-    <li><i class='material-icons'>campaign</i> What are our best lead sources?</li>
-    <li><i class='material-icons'>leaderboard</i> Top 10 customers in every country. Make it a bar chart with filtering by country.</li>
-    <li><i class='material-icons'>support_agent</i> How did our support team perform in 2021-2022?</li>
-</ul>
-""".strip(), unsafe_allow_html=True)
+st.markdown("""<h1><i class='material-icons'>bar_chart</i> Enterprise Data Agent</h1>""", unsafe_allow_html=True)
 
-hide_streamlit_style = """
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {
-    display:none !important;
-}
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 5rem;
-    padding-left: 2rem;
-    padding-right: 2rem;
-}
-</style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+st.markdown("""
+This agent uses the Gemini API and BigQuery to answer questions about a sample CRM dataset. It can:
+*   Analyze trends (e.g., lead conversion rates over time).
+*   Identify key metrics (e.g., top lead sources).
+*   Generate visualizations (e.g., bar charts of customers by country).
+*   Summarize performance (e.g., support team effectiveness).
+
+**Examples of questions:**
+*   _"Lead conversion trends in the US."_
+*   _"What are our best lead sources?"_
+*   _"Top 10 customers in every country. Make it a bar chart with filtering by country."_
+*   _"How did our support team perform in 2021-2022?"_
+""")
 
 ######################### Tickers data #########################
 
@@ -699,6 +678,485 @@ async def _process_event(event: Event) -> bool:
             elif part.function_response:
                 function_responses.append(part.function_response)
         if msg:
+            if content.role == "model":
+                msg_role = "ai"
+            elif content.role == "user":
+                msg_role = "human"
+            else:
+                msg_role = "assistant"
+            with st.chat_message(
+                msg_role,
+                avatar=(":material/person:" if msg_role == "human"
+                        else ":material/robot_2:")
+            ):
+                st.markdown(msg, unsafe_allow_html=True)
+                # Add feedback buttons for AI responses
+                if msg_role in ["ai", "assistant"]:
+                    feedback_key = f"feedback_{event.id}_{idx}"  # Add index for uniqueness
+
+                    feedback_status = None
+                    feedback_states = session.state
+                    if feedback_key in feedback_states:
+                        feedback_status = feedback_states[feedback_key]
+
+                    # Adjust column width for better spacing
+                    col1, col2, _ = st.columns([0.05, 0.05, 0.9])
+                    like_button_type = "secondary"
+                    dislike_button_type = "secondary"
+
+                    with col1:
+                        if feedback_status == "like":
+                            like_button_type = "primary"
+                        if st.button(
+                            "",
+                            icon=":material/thumb_up:",
+                            type=like_button_type,
+                            key=f"like_{feedback_key}"
+                        ):
+                            feedback_status = "like"
+                            await handle_feedback(feedback_key, "like")
+                            st.rerun()
+
+                    with col2:
+                        if feedback_status == "dislike":
+                            dislike_button_type = "primary"
+                        if st.button(
+                            "",
+                            icon=":material/thumb_down:",
+                            type=dislike_button_type,
+                            key=f"dislike_{feedback_key}"
+                        ):
+                            feedback_status = "dislike"
+                            await handle_feedback(feedback_key, "dislike")
+                            st.rerun()
+
+
+
+
+
+    if event.actions.artifact_delta:
+        for filename, version in event.actions.artifact_delta.items():
+            artifact = await artifact_service.load_artifact(
+                app_name=session.app_name, user_id=session.user_id,
+                session_id=session.id, filename=filename, version=version
+            )
+            if not artifact.inline_data or not artifact.inline_data.data:
+                continue
+            if (artifact.inline_data.mime_type.startswith('image/')):
+                    # skip images with the invocation id filename
+                    if filename.startswith(f"{event.invocation_id}."):
+                        continue
+                    with BytesIO(artifact.inline_data.data) as image_io:
+                        with Image.open(image_io) as img:
+                            st.image(img)
+            elif (artifact.inline_data.mime_type ==
+                        "application/vnd.vegalite.v5+json"
+                  or filename.endswith(".vg")
+                      and (artifact.inline_data.mime_type in
+                            ["application/json", "text/plain"])
+            ):
+                # find a parquet file to supply the chart with data
+                data_file_name = filename.rsplit(".", 1)[0] + ".parquet"
+                parquet_file = await artifact_service.load_artifact(
+                    app_name=session.app_name,
+                    user_id=session.user_id,
+                    session_id=session.id,
+                    filename=data_file_name,
+                    version=version)
+                if parquet_file and parquet_file.inline_data:
+                    pq_bytes = parquet_file.inline_data.data # type: ignore
+                else:
+                    pq_bytes = None
+                text = artifact.inline_data.data.decode("utf-8")
+                chart_dict = json.loads(text)
+                if pq_bytes:
+                    with BytesIO(pq_bytes) as pq_file:
+                        df = pd.read_parquet(pq_file)
+                    st.dataframe(df)
+                    chart_dict.pop("data", None)
+                else:
+                    df = None
+                st.vega_lite_chart(data=df,
+                                    spec=chart_dict,
+                                    use_container_width=False)
+            elif artifact.inline_data.mime_type == "application/json":
+                st.json(artifact.inline_data.data.decode("utf-8"))
+            elif artifact.inline_data.mime_type == "text/markdown":
+                st.markdown(artifact.inline_data.data.decode("utf-8"),
+                            unsafe_allow_html=True)
+            elif artifact.inline_data.mime_type == "text/x-sql":
+                st.markdown("```sql\n" +
+                            artifact.inline_data.data.decode("utf-8") +
+                            "\n```\n",
+                            unsafe_allow_html=True)
+            elif artifact.inline_data.mime_type == "text/csv":
+                st.markdown(
+                    "```csv\n" +
+                    artifact.inline_data.data.decode("utf-8") + "\n```",
+                    unsafe_allow_html=True)
+            elif artifact.inline_data.mime_type.startswith("text/"):
+                st.text(artifact.inline_data.data.decode("utf-8"))
+
+    if function_calls:
+        _process_function_calls(function_calls)
+    if function_responses:
+        _process_function_responses(function_responses)
+    return True
+
+
+async def _render_chat(events):
+    for event in events:
+        await _process_event(event)
+
+
+######################### Configuration management #########################
+
+def _get_user_id() -> str:
+    """Retrieves user id (email) from the environment
+    for using with the session service
+
+    Returns:
+        str: user id for the session service
+    """
+    if "agent_user_id" in st.session_state:
+        return st.session_state["agent_user_id"]
+
+    user_id = st.context.headers.get(
+            "X-Goog-Authenticated-User-Email", "").split(":", 1)[-1]
+    if not user_id:
+        try:
+            user_id = (
+                subprocess.check_output(
+                    (
+                        "gcloud config list account "
+                        "--format \"value(core.account)\" "
+                        f"--project {os.environ['GOOGLE_CLOUD_PROJECT']} "
+                        "-q"
+                    ),
+                    shell=True,
+                )
+                .decode()
+                .strip()
+            )
+        except subprocess.CalledProcessError:
+            user_id = ""
+    if not user_id:
+            user_id = DEFAULT_USER_ID
+    st.session_state["agent_user_id"] = user_id
+    st.session_state["agent_user_name"] = user_id
+    return user_id
+
+
+async def _initialize_configuration():
+    if "adk_configured" in st.session_state:
+        return
+
+    # Set user_id if not present
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = os.environ.get("USER", DEFAULT_USER_ID)
+
+    # Set app_name
+    st.session_state.app_name = os.getenv("AGENT_NAME", DEFAULT_AGENT_NAME)
+
+    # Initialize services in session state
+    from google.adk.sessions import InMemorySessionService
+    from google.adk.artifacts import InMemoryArtifactService
+    st.session_state.session_service = InMemorySessionService()
+    st.session_state.artifact_service = InMemoryArtifactService()
+
+    st.session_state.adk_configured = True
+    st.session_state.last_prompt = ""
+
+
+
+######################### Session management #########################
+
+async def _create_session() -> Session:
+    if "adk_session" not in st.session_state:
+        session = await st.session_state.session_service.create_session(
+            app_name=st.session_state.app_name,
+            user_id=_get_user_id()
+        )
+        st.session_state.adk_session = session
+        st.session_state.all_adk_sessions = (st.session_state.all_adk_sessions
+                                             or [])
+        st.session_state.all_adk_sessions.insert(0, session)
+    return st.session_state.adk_session
+
+
+async def _get_all_sessions() -> list[Session]:
+    if "all_adk_sessions" in st.session_state:
+        return st.session_state.all_adk_sessions
+    sessions_response = await st.session_state.session_service.list_sessions(
+            app_name=st.session_state.app_name,
+            user_id=_get_user_id())
+    sessions = sessions_response.sessions
+    st.session_state.all_adk_sessions = sessions or []
+    return sessions
+
+### Watchlist ###
+
+def create_sparkline_svg(data, color):
+    fig, ax = plt.subplots(figsize=(4, 1))
+    ax.plot(data.index, data.values, color=color, linewidth=2)
+    ax.set_yticklabels([]); ax.set_xticklabels([])
+    ax.tick_params(axis='both', which='both', length=0)
+    for spine in ax.spines.values(): spine.set_visible(False)
+    fig.patch.set_alpha(0.0); ax.patch.set_alpha(0.0)
+    svg_buffer = BytesIO()
+    fig.savefig(svg_buffer, format='svg', bbox_inches='tight', pad_inches=0, transparent=True)
+    plt.close(fig)
+    # << ENCODING STEP >> Encode the SVG to Base64
+    svg_base64 = base64.b64encode(svg_buffer.getvalue()).decode("utf-8")
+    return f"data:image/svg+xml;base64,{svg_base64}"
+
+def load_watchlist():
+    with open(os.path.join(os.path.dirname(__file__), "images/logo.svg")) as f:
+        svg = base64.b64encode(f.read().encode("utf-8")).decode("utf-8")
+        st.markdown(f"""
+        <a href="/" target="_blank" style="align-items: center; color: var(--md-sys-color-primary); text-decoration: none">
+        <h2><img style="transform: translateY(-4px);" width="64px" src='data:image/svg+xml;base64,{svg}' /> Enterprise Data Agent</h2>
+        <hr/>
+        </a>
+        """.strip(), unsafe_allow_html=True)
+    st.markdown("### Watchlist")
+    for data in get_ticker_data(DEFAULT_TICKERS):
+        if data:
+            is_positive = data['change'] >= 0
+            color = "#26A69A" if is_positive else "#EF5350"
+            arrow_class = "arrow-up" if is_positive else "arrow-down"
+            change_class = "positive" if is_positive else "negative"
+            arrow_char = "▲" if is_positive else "▼"
+            sparkline_uri = create_sparkline_svg(data['history'], color=color)
+
+            # Create the HTML structure for one ticker row
+            html = f"""
+            <div class="ticker-row">
+                <div class="ticker-info">
+                    <p class="ticker-symbol">{data['symbol_display']}</p>
+                    <p class="company-name">{data['name']}</p>
+                </div>
+                <div class="sparkline">
+                    <img src="{sparkline_uri}" alt="Sparkline chart">
+                </div>
+                <div class="price-info">
+                    <p class="price">{data['price']:.2f}</p>
+                    <p class="change {change_class}">
+                        {data['percent_change']:+.2f}%
+                        <span class="arrow {arrow_class}">{arrow_char}</span>
+                    </p>
+                </div>
+            </div>
+            """
+            st.html(html)
+
+######################### Agent Request Handler #########################
+
+async def ask_agent(question: str):
+    start = time()
+    session = st.session_state.adk_session
+    st.session_state.last_prompt = question
+    content = Content(parts=[
+        Part.from_text(text=question)
+    ],role="user")
+
+    user_event = Event(author="user", content=content)
+    await _render_chat([user_event])
+
+    runtime_name = os.environ["RUNTIME_ENVIRONMENT"].lower()
+    if runtime_name == "local":
+        runtime = FastAPIEngineRuntime(session)
+    else:
+        raise ValueError(f"`{runtime_name}` is not a valid runtime name.")
+
+    model_events_cnt = 0 # Count valid model events in this run
+    await st.session_state.session_service.append_event(
+        session=st.session_state.adk_session,
+        event=Event(
+            author="user",
+            actions=EventActions(
+                state_delta={
+                    "RUNNING_QUERY": True,
+                    "user_name": st.session_state.get("agent_user_name", "")
+                }
+            )
+        )
+    )
+    try:
+        st.session_state.thinking = True
+        for _ in range(MAX_RUN_RETRIES):
+            if model_events_cnt > 0:
+                break
+            async for event in runtime.stream_query(message=question):
+                # If no valid model events in this run, but got an func call error,
+                # retry the run
+                if (event.error_code
+                        and event.error_code == "MALFORMED_FUNCTION_CALL"
+                        and model_events_cnt == 0):
+                    print("Retrying the run")
+                    break
+                if event.content and event.content.role == "model":
+                    model_events_cnt += 1
+                await _render_chat([event])
+        await st.session_state.session_service.append_event(
+            session=st.session_state.adk_session,
+            event=Event(
+                author="user",
+                actions=EventActions(
+                    state_delta={
+                        "RUNNING_QUERY": False
+                    }
+                )
+            )
+        )
+        # Re-retrieve the session
+        st.session_state.adk_session = await st.session_state.session_service.get_session(
+            app_name=session.app_name,
+            user_id=session.user_id,
+            session_id=session.id
+        )
+    finally:
+        st.session_state.thinking = False
+    end = time()
+    st.text(f"Flow duration: {end - start:.2f}s")
+
+
+######################### Streamlit main flow #########################
+
+async def app():
+    top = st.container()
+
+    if "adk_configured" not in st.session_state:
+        with st.spinner("Initializing...", show_time=False):
+            await _initialize_configuration()
+    sessions_list = await _get_all_sessions()
+    session_ids = [s.id for s in sessions_list]
+    session_service = st.session_state.session_service
+    current_session = None
+    current_index = 0
+    if "session" in st.query_params:
+        selected_session_id = st.query_params["session"]
+        if selected_session_id in session_ids:
+            selected_session_id = st.query_params["session"]
+            if (
+                "adk_session" in st.session_state
+                and st.session_state.adk_session.id != selected_session_id
+            ):
+                st.session_state.pop("adk_session")
+            current_index = session_ids.index(selected_session_id)
+        else:
+            st.query_params.pop("session")
+            selected_session_id = -1
+    else:
+        selected_session_id = -1
+    if "adk_session" in st.session_state:
+        current_session = st.session_state.adk_session
+    elif selected_session_id != -1:
+        selected_session = sessions_list[current_index]
+        with st.spinner("Loading...", show_time=False):
+            current_session = await session_service.get_session(
+                app_name=selected_session.app_name,
+                user_id=selected_session.user_id,
+                session_id=selected_session.id
+            )
+            st.session_state.adk_session = current_session
+
+    if not current_session:
+        with st.spinner("Creating a new session...", show_time=False):
+            current_session = await _create_session()
+        st.session_state.adk_session = current_session
+        st.rerun()
+    else:
+        st.query_params["session"] = current_session.id
+
+    with st.sidebar:
+        # load_watchlist()
+        with st.popover("Sessions"):
+            if st.button("New Session"):
+                st.query_params["session"] = "none"
+                st.session_state.pop("adk_session", None)
+                st.rerun()
+
+            sessions_list = st.session_state.all_adk_sessions
+            session_ids = [s.id for s in sessions_list]
+            selected_option = st.selectbox("Select a session:",
+                                        session_ids,
+                                        index=current_index)
+            if selected_option and selected_option != current_session.id: # type: ignore
+                with st.spinner("Loading...", show_time=False):
+                    st.query_params["session"] = selected_option
+                    st.rerun()
+    with top:
+        await _render_chat(st.session_state.adk_session.events) # type: ignore
+    with st.spinner("Thinking...", show_time=False):
+        question = st.chat_input(
+            "Ask a question about your data.",
+            disabled=st.session_state.get("thinking", False)
+        )
+        if "question" not in current_session.state:
+            current_session.state["question"] = question
+        with top:
+            with st.spinner("Thinking...", show_time=True):
+                if question:
+                    await ask_agent(question)
+
+
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(app())
+
+
+async def chat_window():
+    """Main chat window"""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Get or create the session object for this chat
+    session_service = st.session_state.session_service
+    if "session_obj" not in st.session_state:
+        session = await session_service.create_session(
+            app_name=st.session_state.app_name,
+            user_id=st.session_state.user_id,
+        )
+        st.session_state.session_obj = session
+        st.session_state.session_id = session.id
+    else:
+        session = st.session_state.session_obj
+
+    # Create the runtime client with the valid session
+    client = FastAPIEngineRuntime(session=session)
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Ask me about your CRM data..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            full_response = ""
+            try:
+                async for event in client.stream_query(message=prompt):
+                    if event.actions and event.actions.observation:
+                        # Handle observations (tool outputs, etc.)
+                        # This part can be expanded to show tool calls
+                        pass
+                    if event.message and event.message.content:
+                        full_response += event.message.content.parts[0].text
+                        message_placeholder.markdown(full_response + "▌")
+                message_placeholder.markdown(full_response)
+            except Exception as e:
+                full_response = f"An error occurred: {e}"
+                st.error(full_response)
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": full_response}
+        )
+    if msg:
             if content.role == "model":
                 msg_role = "ai"
             elif content.role == "user":
@@ -870,20 +1328,21 @@ def _get_user_id() -> str:
 
 async def _initialize_configuration():
     if "adk_configured" in st.session_state:
-        return st.session_state.adk_configured
-    agent_app_name = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID",
-                                os.getenv("AGENT_NAME", DEFAULT_AGENT_NAME))
-    vertex_ai_bucket = os.environ["AI_STORAGE_BUCKET"]
-    session_service = SessionService(
-          database=os.environ["FIRESTORE_SESSION_DATABASE"],
-          sessions_collection=os.getenv("FIRESTORE_SESSION_COLLECTION", "/")
-    )
-    artifact_service = GcsArtifactService(
-        bucket_name=vertex_ai_bucket
-    )
-    st.session_state.artifact_service = artifact_service
-    st.session_state.session_service = session_service
-    st.session_state.app_name = agent_app_name
+        return
+
+    # Set user_id if not present
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = os.environ.get("USER", DEFAULT_USER_ID)
+
+    # Set app_name
+    st.session_state.app_name = os.getenv("AGENT_NAME", DEFAULT_AGENT_NAME)
+
+    # Initialize services in session state
+    from google.adk.sessions import InMemorySessionService
+    from google.adk.artifacts import InMemoryArtifactService
+    st.session_state.session_service = InMemorySessionService()
+    st.session_state.artifact_service = InMemoryArtifactService()
+
     st.session_state.adk_configured = True
     st.session_state.last_prompt = ""
 
@@ -987,7 +1446,7 @@ async def ask_agent(question: str):
     if runtime_name == "local":
         runtime = FastAPIEngineRuntime(session)
     else:
-        ValueError(f"`{runtime_name}` is not a valid runtime name.")
+        raise ValueError(f"`{runtime_name}` is not a valid runtime name.")
 
     model_events_cnt = 0 # Count valid model events in this run
     await st.session_state.session_service.append_event(
@@ -1007,7 +1466,7 @@ async def ask_agent(question: str):
         for _ in range(MAX_RUN_RETRIES):
             if model_events_cnt > 0:
                 break
-            async for event in runtime.stream_query(question):
+            async for event in runtime.stream_query(message=question):
                 # If no valid model events in this run, but got an func call error,
                 # retry the run
                 if (event.error_code

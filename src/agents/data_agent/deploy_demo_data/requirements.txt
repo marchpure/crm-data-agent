@@ -1,0 +1,8 @@
+pandas
+pyarrow
+tos
+python-serverless
+presto-python-client
+pyhive
+thrift
+trino

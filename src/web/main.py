@@ -1,3 +1,12 @@
+'''
+Author: haoxingjun
+Date: 2025-10-14 14:30:34
+Email: haoxingjun@bytedance.com
+LastEditors: haoxingjun
+LastEditTime: 2025-10-16 03:39:37
+Description: file information
+Company: ByteDance
+'''
 #!/usr/bin/env python
 # Copyright 2025 Google LLC
 #

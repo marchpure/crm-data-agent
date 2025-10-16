@@ -1,3 +1,12 @@
+'''
+Author: haoxingjun
+Date: 2025-10-14 14:30:34
+Email: haoxingjun@bytedance.com
+LastEditors: haoxingjun
+LastEditTime: 2025-10-16 04:37:08
+Description: file information
+Company: ByteDance
+'''
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +24,7 @@
 
 import uuid
 
-from google.adk.agents import LlmAgent
+from veadk import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
 from google.adk.planners import BuiltInPlanner
@@ -29,7 +38,7 @@ from google.genai.types import (
 
 from prompts.crm_business_analyst import (system_instruction
                                           as crm_business_analyst_instruction)
-from tools.utils import get_gemini_model
+from tools.utils import get_volcengine_model
 
 
 BUSINESS_ANALYST_AGENT_MODEL_ID = "gemini-2.5-pro" # "gemini-2.5-pro-preview-05-06"
@@ -50,8 +59,8 @@ async def after_model_callback(callback_context: CallbackContext,
             )
 
 
-crm_business_analyst_agent = LlmAgent(
-    model=get_gemini_model(BUSINESS_ANALYST_AGENT_MODEL_ID),
+crm_business_analyst_agent = Agent(
+    model=get_volcengine_model(BUSINESS_ANALYST_AGENT_MODEL_ID),
     name="crm_business_analyst",
     description="""
         This is your Senior Business Analyst.
@@ -69,19 +78,5 @@ crm_business_analyst_agent = LlmAgent(
         They may offer a few options.
         """,
     instruction=crm_business_analyst_instruction,
-    generate_content_config=GenerateContentConfig(
-        temperature=0.0,
-        top_p=0.0,
-        seed=1,
-        safety_settings=[
-            SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT", # type: ignore
-                threshold="BLOCK_ONLY_HIGH", # type: ignore
-            ),
-        ]
-    ),
-    planner=BuiltInPlanner(
-        thinking_config=ThinkingConfig(thinking_budget=32768)
-    ),
     after_model_callback=after_model_callback
 )
